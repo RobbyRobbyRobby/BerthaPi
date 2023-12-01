@@ -16,3 +16,9 @@ https://github.com/adafruit/Adafruit_CircuitPython_PCA9685
 
 sudo pip3 install adafruit-circuitpython-pca9685
 sudo pip3 install adafruit-circuitpython-servokit
+
+Then SSHKeyboard, which we control with
+
+https://pypi.org/project/sshkeyboard/
+
+pip install sshkeyboard
