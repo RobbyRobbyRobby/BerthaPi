@@ -8,8 +8,11 @@ from enum import Enum
 import RPi.GPIO as GPIO
 from sshkeyboard import listen_keyboard
 import sys
+import adafruit_vl53l0x
+import tm1637
 
 doTests = False
+i2c = None
 
 class MotorDirection(Enum):
 	FORWARD = 1
@@ -35,10 +38,9 @@ class ServoControl:
 	i2c = None
 	pca = None
 
-	def __init__(self):
-
+	def __init__(self, _i2c):
 		print("servo control starting")
-		self.i2c = busio.I2C(board.SCL, board.SDA)
+		self.i2c = _i2c
 		self.pca = PCA9685(self.i2c)
 		self.pca.frequency = self.freq
 
@@ -124,6 +126,19 @@ class DriveMotorControl:
 
 	trim = 5
 
+	sensorIRPin = 12
+	sensorIRCount = 0
+	distanceCountMultiplier = 0.84
+	# 10 IRTicks is about 8.5mm.  So 12 is close to 10mm.  That makes a multiplier of 0.83333mm per tick.  I rounded up.
+
+	def sensorIR_callback(self, channel):
+		self.sensorIRCount = self.sensorIRCount + 1
+		print(self.sensorIRCount)
+
+		if (self.sensorIRCount >= 10):
+			self.AllStop()
+			self.sensorIRCount = 0
+
 	def __init__(self):
 		print("Drive constructor called")
 
@@ -143,6 +158,13 @@ class DriveMotorControl:
 		self.driveLeftPWM.start(0)
 		self.driveRightPWM = GPIO.PWM(self.driveRightEnablePin, self.pwmFreq)
 		self.driveRightPWM.start(0)
+
+		try:
+			GPIO.setup(self.sensorIRPin, GPIO.IN)
+			GPIO.add_event_detect(self.sensorIRPin, GPIO.RISING, callback=self.sensorIR_callback)
+			print("IR Travel Distance Sensor startup success")
+		except:
+			print("Error starting IR Travel Distance Sensor")
 
 	def ChangePWMFrequency(self, newFreq):
 		self.driveLeftPWM.ChangeFrequency(newFreq)
@@ -224,13 +246,9 @@ class DriveMotorControl:
 #==============
 lastKeyPressed="s"
 pressNumber = 0
-sensorIRPin = 12
-sensorIRCount = 0
-distanceCountMultiplier = 0.84
-#10 IRTicks is about 8.5mm.  So 12 is close to 10mm.  That makes a multiplier of 0.83333mm per tick.  I rounded up.
 
 def keyPressed(key):
-	global lastKeyPressed, pressNumber, sensorIRCount
+	global lastKeyPressed , pressNumber #, sensorIRCount
 
 	pressPower = 0
 
@@ -277,7 +295,7 @@ def keyPressed(key):
 		#sleep(1)
 	if (key == "s"):
 		driveMotorControl.AllStop()
-		sensorIRCount = 0
+		#sensorIRCount = 0
 		pressNumber = 0
 	if (key == "j"):
 		#servoControl.PanTiltTo(140,5)
@@ -292,9 +310,9 @@ def keyPressed(key):
 		#servoControl.PanTiltTo(90,175)
 		servoControl.PanTiltBy(0,-10)
 	if (key == "n"):
-		LightsOn()
+		sensorsAndLights.LightsOn()
 	if (key == "m"):
-		LightsOff()
+		sensorsAndLights.LightsOff()
 	if (key == ","):
 		servoControl.ClawOpen(-5)
 	if (key == "."):
@@ -302,56 +320,75 @@ def keyPressed(key):
 	if (key == "z"):
 		driveMotorControl.AllStop()
 		sys.exit()
+	if (key == "f"):
+		sensorsAndLights.GetToFDistance()
 
-def LightsOn():
-	global neo
-	neo[0] = (255,255,255)
-	neo[3] = (255,255,255)
-	neo[4] = (255,255,255)
-	neo[7] = (255,255,255)
-	print("neopixel on")
 
-def LightsOff():
-	global neo
-	neo.fill((0,0,0))
-	print("neopixel off")
+class SensorsAndLights:
+	distanceFront = None
+	sevenSeg = None
+	i2c = None
+	neo = None
+	lastDistanceFront = 0
+#	sevenSegDIO = 19
+#	sevenSegCLK = 26
 
-def sensorIR_callback(channel):
-	global sensorIRPin, sensorIRBool, sensorIRCount
-	sensorIRCount = sensorIRCount + 1
-	print(sensorIRCount)
-	if (sensorIRCount >= 10):
-		driveMotorControl.AllStop()
-		sensorIRCount = 0
-		pressNumber = 0
+	def __init__(self, _i2c):
+		print("Starting ToF")
+		self.i2c = _i2c
+
+		try:
+			print("Init ToF")
+			self.distanceFront = adafruit_vl53l0x.VL53L0X(i2c)
+			print("ToF  ready")
+			self.GetToFDistance()
+			print("ToF startup complete")
+		except:
+			print("VL53L0 init error")
+
+#		sevenSeg = tm1637.TM1637(clk=self.sevenSegCLK, dio=self.sevenSegDIO)
+		print("Starting neopixel")
+
+		try:
+			# NeoPixels must be connected to D10, D12, D18 or D21 to work.
+			self.neo = neopixel.NeoPixel(board.D21, 8,brightness=0.5,pixel_order=neopixel.GRB,auto_write=True,bpp=3)
+			print("neopixel ready")
+			self.LightsOff()
+		except:
+			print("neopixel startup error")
+
+
+	def LightsOn(self):
+		#global neo
+		self.neo[0] = (255,255,255)
+		self.neo[3] = (255,255,255)
+		self.neo[4] = (255,255,255)
+		self.neo[7] = (255,255,255)
+		print("neopixel on")
+
+	def LightsOff(self):
+		#global neo
+		self.neo.fill((0,0,0))
+		print("neopixel off")
+
+	def GetToFDistance(self):
+		self.lastDistanceFront = self.distanceFront.range
+		print('Range: {}mm'.format(self.lastDistanceFront))
 
 #==============
 # Execution Point
 #=============
 
 ready = False
+sensorsAndLights = None
 driveMotorControl = None
 servoControl = None
 print("Execution point commencing")
-neo = None
+#neo = None
 
 GPIO.setmode(GPIO.BCM)
 
 startupErrorCount = 0
-
-try:
-	GPIO.setup(sensorIRPin, GPIO.IN)
-	GPIO.add_event_detect(sensorIRPin, GPIO.RISING, callback=sensorIR_callback)
-except:
-	print("Error starting IR Travel Distance Sensor")
-
-try:
-	# NeoPixels must be connected to D10, D12, D18 or D21 to work.
-	neo = neopixel.NeoPixel(board.D21, 8,brightness=0.5,pixel_order=neopixel.GRB,auto_write=True,bpp=3)
-	print("neopixel ready")
-	LightsOff()
-except:
-	print("neopixel startup error")
 
 while (True):
 	if (startupErrorCount > 3):
@@ -359,10 +396,12 @@ while (True):
 		#break
 
 	if (not ready and startupErrorCount < 4):
-		print("Reports not ready.  Initialising")
+		print("Bootstrap process reports not ready, or error.  Initialising now.")
 		#if True:
 		try:
-			servoControl = ServoControl()
+			i2c = busio.I2C(board.SCL, board.SDA)
+			sensorsAndLights = SensorsAndLights(i2c)
+			servoControl = ServoControl(i2c)
 			driveMotorControl = DriveMotorControl()
 
 			ready = True
